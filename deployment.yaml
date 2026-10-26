@@ -1,0 +1,7 @@
+template-file-path: ./template.yaml
+parameters:
+  Environment: dev
+tags:
+  Project: onward
+  Owner: Effie Njoki
+  Environment: dev
