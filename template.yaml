@@ -420,10 +420,96 @@ Resources:
       HealthCheckType: ELB
       HealthCheckGracePeriod: 300
 
+  # ===========================================================================
+  # CHAPTER 7: THE BACK OFFICE (internal order servers, private, one per AZ)
+  # No public IP, no key pair, no inbound from the internet.
+  # Updates go out through the NAT gateways; engineers use Session Manager.
+  # ===========================================================================
+
+  # The recipe for internal servers
+  InternalLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub 'onward-${Environment}-order-service-lt'
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmiId
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile:
+          Arn: !GetAtt ServerInstanceProfile.Arn
+        SecurityGroupIds:
+          - !Ref InternalSecurityGroup
+        MetadataOptions:
+          HttpTokens: required
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Project
+                Value: onward
+              - Key: Owner
+                Value: !Ref Owner
+              - Key: Environment
+                Value: !Ref Environment
+          - ResourceType: volume
+            Tags:
+              - Key: Project
+                Value: onward
+              - Key: Owner
+                Value: !Ref Owner
+              - Key: Environment
+                Value: !Ref Environment
+        # A placeholder order service on port 8080, standing in for the real software
+        UserData:
+          Fn::Base64: |
+            #!/bin/bash
+            mkdir -p /opt/order-service
+            echo "Onward internal order service on $(hostname). Internal only." > /opt/order-service/index.html
+            cat > /etc/systemd/system/order-service.service <<UNIT
+            [Unit]
+            Description=Onward placeholder order service
+            After=network.target
+            [Service]
+            WorkingDirectory=/opt/order-service
+            ExecStart=/usr/bin/python3 -m http.server 8080
+            Restart=always
+            [Install]
+            WantedBy=multi-user.target
+            UNIT
+            systemctl daemon-reload
+            systemctl enable --now order-service
+
+  # One internal server in each AZ
+  OrderServerA:
+    Type: AWS::EC2::Instance
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref InternalLaunchTemplate
+        Version: !GetAtt InternalLaunchTemplate.LatestVersionNumber
+      SubnetId: !Ref PrivateSubnetA
+      Tags:
+        - Key: Name
+          Value: !Sub 'onward-${Environment}-order-service-a'
+
+  OrderServerB:
+    Type: AWS::EC2::Instance
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref InternalLaunchTemplate
+        Version: !GetAtt InternalLaunchTemplate.LatestVersionNumber
+      SubnetId: !Ref PrivateSubnetB
+      Tags:
+        - Key: Name
+          Value: !Sub 'onward-${Environment}-order-service-b'
+
 Outputs:
   WebsiteUrl:
     Description: Open this in a browser to see the front end
     Value: !Sub 'http://${LoadBalancer.DNSName}'
+  OrderServerAId:
+    Description: Internal order server in the first AZ (reach it with Session Manager)
+    Value: !Ref OrderServerA
+  OrderServerBId:
+    Description: Internal order server in the second AZ (reach it with Session Manager)
+    Value: !Ref OrderServerB
   VpcId:
     Description: The order system's VPC
     Value: !Ref Vpc
