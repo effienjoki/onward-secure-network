@@ -11,6 +11,18 @@ Parameters:
     AllowedValues: [dev, test, prod]
     Default: dev
     Description: Used in resource names (company naming standard onward-<environment>-<purpose>)
+  Owner:
+    Type: String
+    Default: Effie Njoki
+    Description: Person responsible for the resources (company tagging standard)
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: Latest Amazon Linux 2023 image, looked up from AWS's public Parameter Store
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    Description: Free Tier eligible instance size
 
 Resources:
 
@@ -291,7 +303,127 @@ Resources:
       Roles:
         - !Ref ServerRole
 
+  # ===========================================================================
+  # CHAPTER 6: THE FRONT DOOR (load balancer + self-healing front-end servers)
+  # ===========================================================================
+
+  # The receptionist: one public address, spread across both AZs
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub 'onward-${Environment}-alb'
+      Type: application
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      SecurityGroups:
+        - !Ref AlbSecurityGroup
+
+  # The receptionist's list of houses, with a health check
+  FrontendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub 'onward-${Environment}-frontend-tg'
+      VpcId: !Ref Vpc
+      Protocol: HTTP
+      Port: 80
+      TargetType: instance
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+
+  # The receptionist's rule: everything arriving on port 80 goes to the front end
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref FrontendTargetGroup
+
+  # The recipe for every front-end server
+  FrontendLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub 'onward-${Environment}-frontend-lt'
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmiId
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile:
+          Arn: !GetAtt ServerInstanceProfile.Arn
+        SecurityGroupIds:
+          - !Ref FrontendSecurityGroup
+        MetadataOptions:
+          HttpTokens: required
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub 'onward-${Environment}-frontend'
+              - Key: Project
+                Value: onward
+              - Key: Owner
+                Value: !Ref Owner
+              - Key: Environment
+                Value: !Ref Environment
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Sub 'onward-${Environment}-frontend-volume'
+              - Key: Project
+                Value: onward
+              - Key: Owner
+                Value: !Ref Owner
+              - Key: Environment
+                Value: !Ref Environment
+        # Moving-in instructions: install a web server and the required page
+        UserData:
+          Fn::Base64: |
+            #!/bin/bash
+            dnf install -y httpd
+            TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+            INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+            AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+            cat > /var/www/html/index.html <<HTML
+            <!DOCTYPE html>
+            <html>
+              <head><title>Onward Logistics Order System</title></head>
+              <body style="font-family: Arial, sans-serif; text-align: center; margin-top: 80px;">
+                <h1>Effie Njoki</h1>
+                <h2>Lab: Designing secure Network for Onward Logistics Order System</h2>
+                <p>Served by front-end server $INSTANCE_ID in Availability Zone $AZ</p>
+              </body>
+            </html>
+            HTML
+            systemctl enable --now httpd
+
+  # The estate manager: keeps 2 front-end servers running, one per AZ, and replaces failures
+  FrontendAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub 'onward-${Environment}-frontend-asg'
+      MinSize: '2'
+      MaxSize: '4'
+      DesiredCapacity: '2'
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      LaunchTemplate:
+        LaunchTemplateId: !Ref FrontendLaunchTemplate
+        Version: !GetAtt FrontendLaunchTemplate.LatestVersionNumber
+      TargetGroupARNs:
+        - !Ref FrontendTargetGroup
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+
 Outputs:
+  WebsiteUrl:
+    Description: Open this in a browser to see the front end
+    Value: !Sub 'http://${LoadBalancer.DNSName}'
   VpcId:
     Description: The order system's VPC
     Value: !Ref Vpc
