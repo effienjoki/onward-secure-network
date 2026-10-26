@@ -262,6 +262,35 @@ Resources:
         - Key: Name
           Value: !Sub 'onward-${Environment}-internal-sg'
 
+  # ===========================================================================
+  # CHAPTER 5: THE BADGE (a role for servers, so Session Manager works)
+  # No inline policies: the permission is an AWS managed policy, attached by ARN.
+  # ===========================================================================
+
+  # The badge: only EC2 servers may wear it
+  ServerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'onward-${Environment}-server-role'
+      Description: Lets servers register with Systems Manager (Session Manager)
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+
+  # The lanyard: how a server wears the badge
+  ServerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub 'onward-${Environment}-server-profile'
+      Roles:
+        - !Ref ServerRole
+
 Outputs:
   VpcId:
     Description: The order system's VPC
