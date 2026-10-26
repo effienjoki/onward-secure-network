@@ -206,6 +206,62 @@ Resources:
         - !Ref PrivateRouteTableA
         - !Ref PrivateRouteTableB
 
+  # ===========================================================================
+  # CHAPTER 4: THE GUARDS (security groups, two-tier pattern, no port 22)
+  # Each layer only accepts traffic from the layer in front of it.
+  # ===========================================================================
+
+  # Guard at the front door: customers and merchants on the web
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub 'onward-${Environment}-alb-sg'
+      GroupDescription: Load balancer - HTTP from the internet
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - Description: Customers and merchants
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub 'onward-${Environment}-alb-sg'
+
+  # Guard at the front-end servers: only the load balancer may knock
+  FrontendSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub 'onward-${Environment}-frontend-sg'
+      GroupDescription: Front-end servers - HTTP only from the load balancer
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - Description: Web traffic from the load balancer only
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub 'onward-${Environment}-frontend-sg'
+
+  # Guard at the internal order servers: only the front end may knock
+  InternalSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub 'onward-${Environment}-internal-sg'
+      GroupDescription: Internal order services - app port only from the front end
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - Description: Order service calls from the front end only
+          IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref FrontendSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub 'onward-${Environment}-internal-sg'
+
 Outputs:
   VpcId:
     Description: The order system's VPC
